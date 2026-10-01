@@ -1,3 +1,6 @@
 .DS_Store
 *.token
 .netrc
+
+__pycache__/
+*.pyc

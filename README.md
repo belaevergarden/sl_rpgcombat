@@ -209,4 +209,17 @@ player/scripts/     HUD scripts
 player/notecards/   character presets and combat rules
 npc/scripts/        NPC scripts
 npc/notecards/      NPC, party, and combat rules
+tests/              off-world checks for the real LSL sources
 ```
+
+## Tests
+
+Second Life does not run here. `tests/lslvm.py` is a small interpreter for the LSL subset these scripts use. It loads the real `.lsl` files and calls their functions, with stand-ins for `llFrand`, `llGetUnixTime`, notecards, and link messages. The combat rules are not copied into Python.
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+Dice are injected. A queued `llFrand` of `0.0` is a roll of 1, and `19.0` on a d20 is a 20. The clock is `script.time`.
+
+These checks cover the authenticator, preset math, attack and heal resolution, stealth, range, party, and the HUD menus. They do not open a viewer, deliver region chat, run a sensor against a live sim, or click a dialog. That pass is still in-world.
