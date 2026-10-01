@@ -775,7 +775,7 @@ integer isUInt(string value) {
     if (n == 0) return FALSE;
     for (i = 0; i < n; i += 1) {
         ch = llGetSubString(value, i, i);
-        if (ch < "0" || ch > "9") return FALSE;
+        if (llSubStringIndex("0123456789", ch) == -1) return FALSE;
     }
     return TRUE;
 }

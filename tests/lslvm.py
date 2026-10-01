@@ -1500,12 +1500,11 @@ def _text(value):
 
 
 def _compare(op, left, right):
-    if isinstance(left, str) and isinstance(right, str):
-        pair = (left, right)
-    elif _is_num(left) and _is_num(right):
-        pair = (left, right)
-    else:
-        raise LSLError(f"cannot compare {type(left).__name__} {op} {type(right).__name__}")
+    # Linden LSL accepts < <= > >= only for integer and float.
+    # A string comparison is a compile-time type mismatch.
+    if not (_is_num(left) and _is_num(right)):
+        raise LSLError(f"type mismatch: {type(left).__name__} {op} {type(right).__name__}")
+    pair = (left, right)
     if op == "<":
         return pair[0] < pair[1]
     if op == "<=":
