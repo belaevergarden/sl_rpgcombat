@@ -1,0 +1,5 @@
+# Gender preset. A notecard named gen_batata appears in the HUD as Batata.
+# Optional display override: name=Female
+hp=50
+attack=1
+defense=2

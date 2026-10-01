@@ -1,0 +1,23 @@
+# NPC configuration. Edit these values. Do not rename the notecard.
+name=Goblin Scout
+hp=30
+attack=4
+defense=2
+
+# Seconds with no interaction before the NPC rests and turns off.
+# 0 keeps the NPC awake.
+rest_seconds=300
+
+# When reactivation restores HP: no, defeated, or always.
+# defeated restores HP only when leaving the Defeated state.
+restore_hp=defeated
+
+# on_attack fights back after being attacked.
+# on_sight also attacks the nearest valid player while Active.
+aggro=on_attack
+
+# Seconds of silence before Combat returns to Idle or Active.
+combat_timeout=40
+
+# How often an on_sight NPC looks for a player.
+scan_seconds=6

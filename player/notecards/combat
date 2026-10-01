@@ -1,0 +1,21 @@
+# Combat rules. Copy this same notecard into the HUD and the NPC.
+# The attack range cannot be set above 10 meters.
+#
+# attack total = 1d(attack_die) + Attack
+# defense total = 1d(defense_die) + Defense
+# margin = attack total - defense total
+# A margin of 0 or less is a miss. Ties go to the defender.
+# damage = 1d(damage_die) + margin / damage_bonus_scale
+# If margin >= crit_margin, the hit is critical and damage is multiplied.
+
+range=10
+attack_die=20
+defense_die=20
+crit_margin=10
+crit_multiplier=2
+damage_die=6
+damage_bonus_scale=2
+min_damage=1
+heal_die=8
+heal_bonus=0
+defend_bonus=2
