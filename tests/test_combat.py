@@ -8,7 +8,7 @@ import hashlib
 import os
 import unittest
 
-from lslvm import NULL_KEY, Key, Script, Vec, load_notecards, plain
+from lslvm import LSLError, NULL_KEY, Key, Script, Vec, load_notecards, plain
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OWNER = "11111111-1111-4111-8111-111111111111"
@@ -23,6 +23,119 @@ def path(*parts):
     return os.path.join(ROOT, *parts)
 
 
+class Rig:
+    """One prim: several scripts that share chat, linkset data, and dice.
+
+    The first script is the one tests read when a name exists in more than one.
+    state_entry, timer, changed, on_rez, and link_message run on every script.
+    """
+
+    _BROADCAST = ("state_entry", "timer", "changed", "on_rez", "link_message", "sensor", "no_sensor")
+    _SHARED = (
+        "linkset",
+        "notecard_lines",
+        "inventory",
+        "positions",
+        "avatars",
+        "owners",
+        "profiles",
+        "user_keys",
+        "owner_says",
+        "says",
+        "region_says",
+        "links",
+        "dialogs",
+        "textboxes",
+        "sensors",
+        "hovers",
+    )
+
+    def __init__(self, paths):
+        parts = [Script.load(item) for item in paths]
+        object.__setattr__(self, "parts", parts)
+        shared_queue = []
+        for part in parts:
+            part.frand_queue = shared_queue
+            part.peers = [other for other in parts if other is not part]
+        base = parts[0]
+        for part in parts[1:]:
+            for name in self._SHARED:
+                setattr(part, name, getattr(base, name))
+
+    @property
+    def did_reset(self):
+        return any(part.did_reset for part in self.parts)
+
+    def __setattr__(self, name, value):
+        if name == "frand_queue":
+            for part in self.parts:
+                part.frand_queue = value
+            return
+        if name in ("time", "owner", "key", "position", "object_name", "detected"):
+            for part in self.parts:
+                setattr(part, name, value)
+            return
+        if name in self._SHARED:
+            for part in self.parts:
+                setattr(part, name, value)
+            return
+        setattr(self.parts[0], name, value)
+
+    def __getattr__(self, name):
+        return getattr(self.parts[0], name)
+
+    def get(self, name):
+        for part in self.parts:
+            if name in part.values:
+                return part.get(name)
+        raise LSLError(f"unknown global {name}")
+
+    def set(self, name, value):
+        for part in self.parts:
+            if name in part.values:
+                part.set(name, value)
+                return
+        raise LSLError(f"unknown global {name}")
+
+    def call(self, name, *args):
+        if name in self._BROADCAST:
+            result = None
+            found = False
+            for part in self.parts:
+                if name in part.functions:
+                    found = True
+                    result = part.call(name, *args)
+            if not found:
+                raise LSLError(f"unknown function {name}")
+            return result
+        for part in self.parts:
+            if name in part.functions:
+                return part.call(name, *args)
+        raise LSLError(f"unknown function {name}")
+
+    def deliver(self, limit=10000):
+        steps = 0
+        while steps < limit and not self.did_reset:
+            part = next((item for item in self.parts if item.pending and not item.did_reset), None)
+            if part is None:
+                return steps
+            steps += part.deliver(limit=1, strict=False)
+        if any(item.pending and not item.did_reset for item in self.parts):
+            raise LSLError("notecard delivery did not finish")
+        return steps
+
+    def clear_io(self):
+        self.parts[0].clear_io()
+
+    def use_notecards(self, texts, order=None):
+        self.parts[0].use_notecards(texts, order)
+        lines = self.parts[0].notecard_lines
+        inventory = self.parts[0].inventory
+        for part in self.parts[1:]:
+            part.notecard_lines = lines
+            part.inventory = inventory
+
+
 def click(script, message, who=None):
     if who is None:
         who = script.owner
@@ -34,8 +147,14 @@ def touch(script, who):
     script.call("touch_start", 1)
 
 
-def boot_hud(extra=None):
-    hud = Script.load(path("player", "scripts", "sl_rpg_hud.lsl"))
+def boot_hud(extra=None, deliver=True):
+    hud = Rig(
+        [
+            path("player", "scripts", "sl_rpg_hud.lsl"),
+            path("player", "scripts", "sl_rpg_hud_ui.lsl"),
+            path("player", "scripts", "sl_rpg_hud_cards.lsl"),
+        ]
+    )
     hud.time = WHEN
     hud.owner = Key(OWNER)
     hud.key = Key(HUD_OBJ)
@@ -52,12 +171,19 @@ def boot_hud(extra=None):
             order.append(name)
     hud.use_notecards(texts, order)
     hud.call("state_entry")
-    hud.deliver()
+    if deliver:
+        hud.deliver()
     return hud
 
 
-def boot_npc(extra=None):
-    npc = Script.load(path("npc", "scripts", "sl_rpg_npc.lsl"))
+def boot_npc(extra=None, deliver=True):
+    npc = Rig(
+        [
+            path("npc", "scripts", "sl_rpg_npc.lsl"),
+            path("npc", "scripts", "sl_rpg_npc_ui.lsl"),
+            path("npc", "scripts", "sl_rpg_npc_fight.lsl"),
+        ]
+    )
     npc.time = WHEN
     npc.owner = Key(OWNER)
     npc.key = Key(NPC_OBJ)
@@ -75,7 +201,8 @@ def boot_npc(extra=None):
             order.append(name)
     npc.use_notecards(texts, order)
     npc.call("state_entry")
-    npc.deliver()
+    if deliver:
+        npc.deliver()
     return npc
 
 
@@ -501,12 +628,7 @@ class TestHud(unittest.TestCase):
         self.assertEqual(plain(hud.get("gDefendBonus")), 4)
 
     def test_still_reading_and_owner_reset(self):
-        hud = Script.load(path("player", "scripts", "sl_rpg_hud.lsl"))
-        hud.owner = Key(OWNER)
-        hud.profiles[OWNER] = {"display": "Isabela", "user": "", "legacy": ""}
-        texts, order = load_notecards(path("player", "notecards"))
-        hud.use_notecards(texts, order)
-        hud.call("state_entry")
+        hud = boot_hud(deliver=False)
         touch(hud, hud.owner)
         self.assertIn("The HUD is still reading configuration.", hud.owner_says)
         hud.linkset["c.name"] = "kept"

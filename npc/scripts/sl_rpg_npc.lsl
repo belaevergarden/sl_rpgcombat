@@ -1,13 +1,15 @@
-// SL RPG Combat — NPC.
-// The NPC needs this script, sl_rpg_auth, and the notecards npc, combat, and party.
+// SL RPG Combat — NPC core.
+// Put this in the NPC root prim with sl_rpg_auth, sl_rpg_npc_ui, and
+// sl_rpg_npc_fight. Save every script with the Mono compiler checked.
 // User-facing text is English.
-// If you change this file, also change SEC_CHANNEL, SEC_PASSWORD, and
+// If you change gameplay, also change SEC_CHANNEL, SEC_PASSWORD, and
 // SEC_BUILD in both copies of sl_rpg_auth.lsl.
 
 integer LINK_SEND = 51001;
 integer LINK_RECV = 51002;
 integer LINK_LISTEN = 51003;
 integer LINK_READY = 51004;
+integer LINK_BODY = 51011;
 
 integer ST_OFF = 0;
 integer ST_IDLE = 1;
@@ -38,16 +40,6 @@ integer gDidOverride;
 string gBuild;
 
 integer gRangeM;
-integer gAttackDie;
-integer gDefenseDie;
-integer gCritMargin;
-integer gCritMult;
-integer gDamageDie;
-integer gDamageScale;
-integer gMinDamage;
-integer gHealDie;
-integer gHealBonus;
-integer gDefendBonus;
 integer gRest;
 string gRestore;
 string gAggro;
@@ -71,18 +63,10 @@ key gReqAv;
 integer gReqTime;
 integer gSeq;
 
-integer gHandle;
-integer gChan;
-integer gMenu;
-integer gText;
-integer gExpires;
-key gMenuAv;
-
 list gJobs;
 key gQuery;
 string gQueryKind;
 string gCard;
-integer gLine;
 integer gMode;
 string gPendingName;
 integer gHpT;
@@ -97,6 +81,21 @@ string sanitize(string value) {
     value = llStringTrim(value, STRING_TRIM);
     if (llStringLength(value) > 40) value = llGetSubString(value, 0, 39);
     return value;
+}
+
+string opOf(string body) {
+    integer cut;
+    cut = llSubStringIndex(body, "\n");
+    if (cut < 0) cut = llSubStringIndex(body, "|");
+    if (cut < 0) return body;
+    return llGetSubString(body, 0, cut - 1);
+}
+
+string restOf(string body) {
+    integer cut;
+    cut = llSubStringIndex(body, "\n");
+    if (cut < 0) return "";
+    return llGetSubString(body, cut + 1, -1);
 }
 
 string stateLabel() {
@@ -128,8 +127,7 @@ pushListen() {
 }
 
 armTimer() {
-    if (gHandle) llSetTimerEvent(1.0);
-    else if (gState == ST_OFF) llSetTimerEvent(60.0);
+    if (gState == ST_OFF) llSetTimerEvent(60.0);
     else if (gState == ST_COMBAT || gState == ST_ACTIVE) llSetTimerEvent(2.0);
     else llSetTimerEvent(5.0);
 }
@@ -166,16 +164,6 @@ tell(key av, string text) {
 rangeFail(key av) {
     tell(av, "Target is out of range.");
     tell(av, "Maximum attack range: " + (string)gRangeM + "m.");
-}
-
-sayAs(string speaker, string text) {
-    string old;
-    old = llGetObjectName();
-    if (llStringLength(speaker) > 63) speaker = llGetSubString(speaker, 0, 62);
-    if (speaker == "") speaker = gName;
-    llSetObjectName(speaker);
-    llSay(0, text);
-    llSetObjectName(old);
 }
 
 integer inRangeOf(key id) {
@@ -232,113 +220,6 @@ remember(key av, integer hp) {
         gFoeHP = gFoeHP + [hp];
     }
     else gFoeHP = llListReplaceList(gFoeHP, [hp], index, index);
-}
-
-integer rollDie(integer sides) {
-    if (sides < 1) sides = 1;
-    if (sides > 1000) sides = 1000;
-    return 1 + (integer)llFrand((float)sides);
-}
-
-list opposed(integer atkStat, integer defStat) {
-    integer atkDie;
-    integer defDie;
-    integer atkTotal;
-    integer defTotal;
-    atkDie = rollDie(gAttackDie);
-    defDie = rollDie(gDefenseDie);
-    atkTotal = atkDie + atkStat;
-    defTotal = defDie + defStat;
-    return [atkTotal - defTotal, atkDie, atkTotal, defDie, defTotal];
-}
-
-list resolve(integer atkStat, integer defStat) {
-    list roll;
-    integer margin;
-    integer damage;
-    integer crit;
-    integer scale;
-    roll = opposed(atkStat, defStat);
-    margin = llList2Integer(roll, 0);
-    damage = 0;
-    crit = FALSE;
-    if (margin > 0) {
-        scale = gDamageScale;
-        if (scale < 1) scale = 1;
-        damage = rollDie(gDamageDie) + margin / scale;
-        if (damage < gMinDamage) damage = gMinDamage;
-        if (margin >= gCritMargin) {
-            crit = TRUE;
-            if (gCritMult > 1) damage = damage * gCritMult;
-        }
-        if (damage > 1000000) damage = 1000000;
-    }
-    return [margin, damage, crit, llList2Integer(roll, 1), llList2Integer(roll, 2), llList2Integer(roll, 3), llList2Integer(roll, 4)];
-}
-
-sayRolls(string attacker, integer atkStat, integer atkDie, integer atkTotal, string defender, integer defStat, integer defDie, integer defTotal) {
-    sayAs(attacker, attacker + " rolls 1d" + (string)gAttackDie + " (" + (string)atkDie + ") + " + (string)atkStat + " Attack = " + (string)atkTotal + ". " + defender + " rolls 1d" + (string)gDefenseDie + " (" + (string)defDie + ") + " + (string)defStat + " Defense = " + (string)defTotal + ".");
-}
-
-narrateResult(string attacker, string defender, integer margin, integer damage, integer crit, integer hp, integer maxHp) {
-    if (margin <= 0) sayAs(defender, "Miss. " + defender + " defends.");
-    else if (crit) sayAs(attacker, "Critical hit! " + attacker + " deals " + (string)damage + " damage to " + defender + ". (" + (string)hp + "/" + (string)maxHp + " HP)");
-    else sayAs(attacker, "Hit! " + attacker + " deals " + (string)damage + " damage to " + defender + ". (" + (string)hp + "/" + (string)maxHp + " HP)");
-}
-
-list orderButtons(list buttons) {
-    integer n;
-    integer extra;
-    integer p;
-    integer start;
-    list fixed;
-    n = llGetListLength(buttons);
-    extra = n % 3;
-    if (extra != 0) {
-        extra = 3 - extra;
-        for (p = 0; p < extra; p += 1) buttons = buttons + [" "];
-        n = n + extra;
-    }
-    start = n - 3;
-    while (start >= 0) {
-        fixed = fixed + llList2List(buttons, start, start + 2);
-        start = start - 3;
-    }
-    return fixed;
-}
-
-closeDialog() {
-    if (gHandle) llListenRemove(gHandle);
-    gHandle = 0;
-    gMenu = 0;
-    gText = 0;
-    armTimer();
-}
-
-dialogTo(key av, string prompt, list labels) {
-    if (av == NULL_KEY) return;
-    if (llGetListLength(labels) == 0) labels = ["Status"];
-    if (gHandle) llListenRemove(gHandle);
-    gChan = -((integer)llFrand(1000000000.0) + 100000);
-    gHandle = llListen(gChan, "", av, "");
-    gMenuAv = av;
-    gExpires = llGetUnixTime() + 45;
-    armTimer();
-    if (llStringLength(prompt) > 480) prompt = llGetSubString(prompt, 0, 479);
-    llDialog(av, prompt, orderButtons(labels), gChan);
-}
-
-textBoxTo(key av, string prompt) {
-    if (av == NULL_KEY) return;
-    if (gHandle) llListenRemove(gHandle);
-    gChan = -((integer)llFrand(1000000000.0) + 100000);
-    gHandle = llListen(gChan, "", av, "");
-    gMenuAv = av;
-    gMenu = 0;
-    gExpires = llGetUnixTime() + 45;
-    armTimer();
-    if (llStringLength(prompt) > 480) prompt = llGetSubString(prompt, 0, 479);
-    llTextBox(av, prompt, gChan);
 }
 
 ack(key av) {
@@ -425,163 +306,24 @@ setNpcHp(integer value) {
     }
 }
 
-applyNpcDamage(integer damage) {
-    integer left;
-    left = gHP - damage;
-    if (left < 0) left = 0;
-    gHP = left;
-    if (gHP <= 0) enter(ST_DEFEATED);
-    else enter(ST_COMBAT);
+sendShow(integer menu, key av, string prompt, list labels) {
+    llMessageLinked(LINK_SET, LINK_BODY, "SHOW\n" + (string)menu + "\n" + (string)av + "\n" + llDumpList2String(labels, "|") + "\n" + prompt, NULL_KEY);
 }
 
-doCounter(key av, string player, integer playerDef, integer playerHp, integer playerMax, integer defending) {
-    integer defStat;
-    list roll;
-    integer margin;
-    integer damage;
-    integer crit;
-    integer atkDie;
-    integer atkTotal;
-    integer defDie;
-    integer defTotal;
-    integer newHp;
-    string bonus;
-    if (gState == ST_OFF || gState == ST_DEFEATED) return;
-    if (player == "") player = "Someone";
-    if (!validFoeKey(av)) return;
-    if (playerHp <= 0) return;
-    defStat = playerDef;
-    if (defending) defStat = defStat + gDefendBonus;
-    roll = resolve(gAtk, defStat);
-    margin = llList2Integer(roll, 0);
-    damage = llList2Integer(roll, 1);
-    crit = llList2Integer(roll, 2);
-    atkDie = llList2Integer(roll, 3);
-    atkTotal = llList2Integer(roll, 4);
-    defDie = llList2Integer(roll, 5);
-    defTotal = llList2Integer(roll, 6);
-    if (damage > playerHp) damage = playerHp;
-    newHp = playerHp - damage;
-    sayAs(gName, gName + " attacks " + player + ".");
-    if (defending) {
-        bonus = (string)gDefendBonus;
-        if (gDefendBonus >= 0) bonus = "+" + bonus;
-        sayAs(player, player + " is defending (" + bonus + " Defense).");
-    }
-    sayRolls(gName, gAtk, atkDie, atkTotal, player, defStat, defDie, defTotal);
-    narrateResult(gName, player, margin, damage, crit, newHp, playerMax);
-    remember(av, newHp);
-    gLastActivity = llGetUnixTime();
-    enter(ST_COMBAT);
-    if (damage > 0) llMessageLinked(LINK_SET, LINK_SEND, "HPDELTA|" + (string)av + "|" + (string)(-damage), av);
+sendBox(integer which, key av, string prompt) {
+    llMessageLinked(LINK_SET, LINK_BODY, "BOX\n" + (string)which + "\n" + (string)av + "\n" + prompt, NULL_KEY);
 }
 
-doHeal(key av, string player) {
-    integer amount;
-    integer missing;
-    if (player == "") player = "Someone";
-    if (gState == ST_OFF) {
-        tell(av, "The NPC is not active.");
-        return;
-    }
-    if (!isAllyKey(av)) {
-        tell(av, "You can only heal an ally.");
-        return;
-    }
-    if (!inRangeOf(av)) {
-        rangeFail(av);
-        return;
-    }
-    if (gHP >= gMax) {
-        tell(av, gName + " is already at full HP.");
-        return;
-    }
-    amount = rollDie(gHealDie) + gHealBonus;
-    if (amount < 1) amount = 1;
-    missing = gMax - gHP;
-    if (amount > missing) amount = missing;
-    gHP = gHP + amount;
-    gLastActivity = llGetUnixTime();
-    gLastPlayerAct = llGetUnixTime();
-    if (gState == ST_DEFEATED) {
-        if (gAggro == "on_sight") enter(ST_ACTIVE);
-        else enter(ST_IDLE);
-    }
-    else {
-        refreshText();
-        saveRuntime();
-    }
-    sayAs(player, player + " heals " + gName + " for " + (string)amount + ". (" + (string)gHP + "/" + (string)gMax + " HP)");
+sendAttack(key av, string player, integer atkStat, integer stealth) {
+    llMessageLinked(LINK_SET, LINK_BODY, "J|ATTACK|" + (string)av + "|" + player + "|" + (string)atkStat + "|" + (string)stealth + "|" + (string)gHP + "|" + (string)gMax + "|" + (string)gAtk + "|" + (string)gDef + "|" + sanitize(gName), NULL_KEY);
 }
 
-doPlayerAttack(key av, string player, integer atkStat, integer stealth) {
-    list check;
-    list roll;
-    integer margin;
-    integer damage;
-    integer crit;
-    integer atkDie;
-    integer atkTotal;
-    integer defDie;
-    integer defTotal;
-    integer newHp;
-    if (player == "") player = "Someone";
-    if (gState == ST_OFF) {
-        tell(av, "The NPC is not active.");
-        return;
-    }
-    if (isAllyKey(av)) {
-        tell(av, "You cannot attack an ally.");
-        return;
-    }
-    if (!inRangeOf(av)) {
-        rangeFail(av);
-        return;
-    }
-    if (gState == ST_DEFEATED) {
-        tell(av, "The NPC is defeated.");
-        return;
-    }
-    if (stealth) {
-        if (!canStealth()) {
-            tell(av, "Stealth is not available.");
-            return;
-        }
-    }
-    gLastActivity = llGetUnixTime();
-    gLastPlayerAct = llGetUnixTime();
-    if (stealth) {
-        check = opposed(atkStat, gDef);
-        margin = llList2Integer(check, 0);
-        atkDie = llList2Integer(check, 1);
-        atkTotal = llList2Integer(check, 2);
-        defDie = llList2Integer(check, 3);
-        defTotal = llList2Integer(check, 4);
-        sayRolls(player, atkStat, atkDie, atkTotal, gName, gDef, defDie, defTotal);
-        if (margin <= 0) {
-            sayAs(player, "Stealth failed.");
-            sayAs(gName, "The NPC has detected you.");
-            enter(ST_COMBAT);
-            startCounter();
-            return;
-        }
-        sayAs(player, "Successful stealth attack.");
-    }
-    roll = resolve(atkStat, gDef);
-    margin = llList2Integer(roll, 0);
-    damage = llList2Integer(roll, 1);
-    crit = llList2Integer(roll, 2);
-    atkDie = llList2Integer(roll, 3);
-    atkTotal = llList2Integer(roll, 4);
-    defDie = llList2Integer(roll, 5);
-    defTotal = llList2Integer(roll, 6);
-    newHp = gHP - damage;
-    if (newHp < 0) newHp = 0;
-    if (!stealth) sayAs(player, player + " attacks " + gName + ".");
-    sayRolls(player, atkStat, atkDie, atkTotal, gName, gDef, defDie, defTotal);
-    narrateResult(player, gName, margin, damage, crit, newHp, gMax);
-    applyNpcDamage(damage);
-    if (gHP > 0 && !stealth) startCounter();
+sendHeal(key av, string player) {
+    llMessageLinked(LINK_SET, LINK_BODY, "J|HEAL|" + (string)av + "|" + player + "|" + (string)gHP + "|" + (string)gMax + "|" + sanitize(gName), NULL_KEY);
+}
+
+sendCounter(key av, string player, integer defStat, integer hp, integer maxHp, integer defending) {
+    llMessageLinked(LINK_SET, LINK_BODY, "J|COUNTER|" + (string)av + "|" + player + "|" + (string)defStat + "|" + (string)hp + "|" + (string)maxHp + "|" + (string)defending + "|" + (string)gAtk + "|" + sanitize(gName), NULL_KEY);
 }
 
 handleAction(string body, key speaker) {
@@ -596,6 +338,7 @@ handleAction(string body, key speaker) {
     integer hp;
     integer maxHp;
     integer defending;
+    integer stealth;
     fields = llParseStringKeepNulls(body, ["|"], []);
     if (llList2String(fields, 0) != "ACTION") return;
     av = (key)llList2String(fields, 1);
@@ -624,12 +367,82 @@ handleAction(string body, key speaker) {
         ack(av);
         return;
     }
-    if (kind == "COUNTER") doCounter(av, player, defStat, hp, maxHp, defending);
-    else if (kind == "HEAL") doHeal(av, player);
-    else if (kind == "STEALTH") doPlayerAttack(av, player, atkStat, TRUE);
-    else if (kind == "ATTACK") doPlayerAttack(av, player, atkStat, FALSE);
-    else {
-        ack(av);
+    if (kind == "COUNTER") {
+        if (gState == ST_OFF || gState == ST_DEFEATED) {
+            ack(av);
+            return;
+        }
+        if (!validFoeKey(av)) {
+            ack(av);
+            return;
+        }
+        if (hp <= 0) {
+            ack(av);
+            return;
+        }
+        gLastActivity = llGetUnixTime();
+        sendCounter(av, player, defStat, hp, maxHp, defending);
+        return;
+    }
+    if (kind == "HEAL") {
+        if (gState == ST_OFF) {
+            tell(av, "The NPC is not active.");
+            ack(av);
+            return;
+        }
+        if (!isAllyKey(av)) {
+            tell(av, "You can only heal an ally.");
+            ack(av);
+            return;
+        }
+        if (!inRangeOf(av)) {
+            rangeFail(av);
+            ack(av);
+            return;
+        }
+        if (gHP >= gMax) {
+            tell(av, gName + " is already at full HP.");
+            ack(av);
+            return;
+        }
+        gLastActivity = llGetUnixTime();
+        gLastPlayerAct = llGetUnixTime();
+        sendHeal(av, player);
+        return;
+    }
+    if (kind == "STEALTH" || kind == "ATTACK") {
+        stealth = FALSE;
+        if (kind == "STEALTH") stealth = TRUE;
+        if (gState == ST_OFF) {
+            tell(av, "The NPC is not active.");
+            ack(av);
+            return;
+        }
+        if (isAllyKey(av)) {
+            tell(av, "You cannot attack an ally.");
+            ack(av);
+            return;
+        }
+        if (!inRangeOf(av)) {
+            rangeFail(av);
+            ack(av);
+            return;
+        }
+        if (gState == ST_DEFEATED) {
+            tell(av, "The NPC is defeated.");
+            ack(av);
+            return;
+        }
+        if (stealth) {
+            if (!canStealth()) {
+                tell(av, "Stealth is not available.");
+                ack(av);
+                return;
+            }
+        }
+        gLastActivity = llGetUnixTime();
+        gLastPlayerAct = llGetUnixTime();
+        sendAttack(av, player, atkStat, stealth);
         return;
     }
     ack(av);
@@ -684,14 +497,12 @@ openRoot(key av) {
         else buttons = ["Attack", "Status"];
     }
     if (av == llGetOwner()) buttons = buttons + ["Manage"];
-    gMenu = MENU_ROOT;
-    dialogTo(av, info, buttons);
+    sendShow(MENU_ROOT, av, info, buttons);
 }
 
 openManage(key av) {
     if (av != llGetOwner()) return;
-    gMenu = MENU_MANAGE;
-    dialogTo(av, "Manage " + gName + ".\nThese actions are not combat rules.", ["Set HP", "Set Attack", "Set Defense", "Set Name", "Set Party", "Set Target", "ON", "OFF", "Reload", "Back"]);
+    sendShow(MENU_MANAGE, av, "Manage " + gName + ".\nThese actions are not combat rules.", ["Set HP", "Set Attack", "Set Defense", "Set Name", "Set Party", "Set Target", "ON", "OFF", "Reload", "Back"]);
 }
 
 clearRuntimeKeys() {
@@ -709,41 +520,22 @@ clearRuntimeKeys() {
     llLinksetDataDelete("n.party");
 }
 
-handleMenu(string message) {
-    key av;
-    av = gMenuAv;
+handleMenu(integer menu, key av, string message) {
     if (message == " ") return;
-    if (gMenu == MENU_MANAGE) {
+    if (menu == MENU_MANAGE) {
         if (av != llGetOwner()) return;
-        if (message == "Set HP") {
-            gText = TEXT_HP;
-            textBoxTo(av, "Set HP for " + gName + ". Current " + (string)gHP + "/" + (string)gMax + ".");
-        }
-        else if (message == "Set Attack") {
-            gText = TEXT_ATK;
-            textBoxTo(av, "Set Attack. Current " + (string)gAtk + ".");
-        }
-        else if (message == "Set Defense") {
-            gText = TEXT_DEF;
-            textBoxTo(av, "Set Defense. Current " + (string)gDef + ".");
-        }
-        else if (message == "Set Name") {
-            gText = TEXT_NAME;
-            textBoxTo(av, "Set the NPC name.");
-        }
-        else if (message == "Set Party") {
-            gText = TEXT_PARTY;
-            textBoxTo(av, "Allies, separated by commas.\nSend clear to remove every ally.\nExample: isabela.evergarden, tisga.resident");
-        }
-        else if (message == "Set Target") {
-            gText = TEXT_TARGET;
-            textBoxTo(av, "Avatar name or UUID.\nSend clear for automatic targeting.");
-        }
+        if (message == "Set HP") sendBox(TEXT_HP, av, "Set HP for " + gName + ". Current " + (string)gHP + "/" + (string)gMax + ".");
+        else if (message == "Set Attack") sendBox(TEXT_ATK, av, "Set Attack. Current " + (string)gAtk + ".");
+        else if (message == "Set Defense") sendBox(TEXT_DEF, av, "Set Defense. Current " + (string)gDef + ".");
+        else if (message == "Set Name") sendBox(TEXT_NAME, av, "Set the NPC name.");
+        else if (message == "Set Party") sendBox(TEXT_PARTY, av, "Allies, separated by commas.\nSend clear to remove every ally.\nExample: isabela.evergarden, tisga.resident");
+        else if (message == "Set Target") sendBox(TEXT_TARGET, av, "Avatar name or UUID.\nSend clear for automatic targeting.");
         else if (message == "ON") activate(gState, av);
         else if (message == "OFF") turnOff(av);
         else if (message == "Reload") {
             clearRuntimeKeys();
             llOwnerSay("Reloading configuration.");
+            llMessageLinked(LINK_SET, LINK_BODY, "RST", NULL_KEY);
             llResetScript();
         }
         else if (message == "Back") openRoot(av);
@@ -834,18 +626,18 @@ setTargetText(string raw) {
     pump();
 }
 
-handleText(string message) {
+handleText(integer which, key av, string message) {
     integer value;
-    if (gMenuAv != llGetOwner()) return;
+    if (av != llGetOwner()) return;
     message = llStringTrim(message, STRING_TRIM);
-    if (gText == TEXT_HP || gText == TEXT_ATK || gText == TEXT_DEF) {
+    if (which == TEXT_HP || which == TEXT_ATK || which == TEXT_DEF) {
         if (!isUInt(message)) {
-            tell(gMenuAv, "Enter a whole number.");
+            tell(av, "Enter a whole number.");
             return;
         }
         value = (integer)message;
-        if (gText == TEXT_HP) setNpcHp(value);
-        else if (gText == TEXT_ATK) {
+        if (which == TEXT_HP) setNpcHp(value);
+        else if (which == TEXT_ATK) {
             if (value > 100000) value = 100000;
             gAtk = value;
             saveRuntime();
@@ -855,25 +647,21 @@ handleText(string message) {
             gDef = value;
             saveRuntime();
         }
-        tell(gMenuAv, gName + " — HP " + (string)gHP + "/" + (string)gMax + ", Attack " + (string)gAtk + ", Defense " + (string)gDef + ".");
+        tell(av, gName + " — HP " + (string)gHP + "/" + (string)gMax + ", Attack " + (string)gAtk + ", Defense " + (string)gDef + ".");
         refreshText();
         return;
     }
-    if (gText == TEXT_NAME) {
+    if (which == TEXT_NAME) {
         if (message == "") return;
         gName = sanitize(message);
         if (gName == "") return;
         saveRuntime();
         refreshText();
-        tell(gMenuAv, "Name set to " + gName + ".");
+        tell(av, "Name set to " + gName + ".");
         return;
     }
-    if (gText == TEXT_PARTY) setPartyText(message);
-    else if (gText == TEXT_TARGET) setTargetText(message);
-}
-
-queueCard(string name) {
-    if (llGetInventoryType(name) == INVENTORY_NOTECARD) gJobs = gJobs + ["NC|" + name];
+    if (which == TEXT_PARTY) setPartyText(message);
+    else if (which == TEXT_TARGET) setTargetText(message);
 }
 
 parseLine(string raw) {
@@ -908,23 +696,7 @@ parseLine(string raw) {
                 }
             }
         }
-        else if (keyName == "attack_die") gAttackDie = number;
-        else if (keyName == "defense_die") gDefenseDie = number;
-        else if (keyName == "crit_margin") gCritMargin = number;
-        else if (keyName == "crit_multiplier") gCritMult = number;
-        else if (keyName == "damage_die") gDamageDie = number;
-        else if (keyName == "damage_bonus_scale") gDamageScale = number;
-        else if (keyName == "min_damage") gMinDamage = number;
-        else if (keyName == "heal_die") gHealDie = number;
-        else if (keyName == "heal_bonus") gHealBonus = number;
-        else if (keyName == "defend_bonus") gDefendBonus = number;
-        if (gAttackDie < 1) gAttackDie = 1;
-        if (gDefenseDie < 1) gDefenseDie = 1;
-        if (gDamageDie < 1) gDamageDie = 1;
-        if (gHealDie < 1) gHealDie = 1;
-        if (gDamageScale < 1) gDamageScale = 1;
-        if (gCritMult < 1) gCritMult = 1;
-        if (gMinDamage < 0) gMinDamage = 0;
+        llMessageLinked(LINK_SET, LINK_BODY, "D\n" + keyName + "\n" + (string)number, NULL_KEY);
         return;
     }
     if (keyName == "name") gNameT = sanitize(value);
@@ -1042,45 +814,143 @@ pump() {
     }
     kind = llGetSubString(job, 0, bar - 1);
     arg = llGetSubString(job, bar + 1, -1);
-    if (kind == "NC") {
-        if (llGetInventoryType(arg) != INVENTORY_NOTECARD) {
-            pump();
-            return;
-        }
-        gCard = arg;
-        gLine = 0;
-        gMode = -1;
-        gHpT = -1;
-        gAtkT = -1;
-        gDefT = -1;
-        gNameT = "";
-        if (arg == "combat") gMode = 0;
-        else if (arg == "npc") gMode = 1;
-        else if (arg == "party") gMode = 2;
-        gQueryKind = "NC";
-        gQuery = llGetNotecardLine(gCard, 0);
-        return;
-    }
     if (kind == "UK" || kind == "TG") {
         gPendingName = arg;
         gQueryKind = kind;
         gQuery = llRequestUserKey(arg);
+        return;
     }
+    pump();
+}
+
+applyZ(string body) {
+    list fields;
+    string kind;
+    key av;
+    integer newHp;
+    integer stealth;
+    integer failed;
+    integer damage;
+    fields = llParseStringKeepNulls(body, ["|"], []);
+    kind = llList2String(fields, 1);
+    av = (key)llList2String(fields, 2);
+    if (kind == "ATTACK") {
+        newHp = (integer)llList2String(fields, 3);
+        stealth = (integer)llList2String(fields, 4);
+        failed = (integer)llList2String(fields, 5);
+        if (newHp < 0) newHp = 0;
+        gHP = newHp;
+        if (failed) {
+            enter(ST_COMBAT);
+            startCounter();
+            ack(av);
+            return;
+        }
+        if (gHP <= 0) enter(ST_DEFEATED);
+        else enter(ST_COMBAT);
+        if (gHP > 0 && !stealth) startCounter();
+        ack(av);
+        return;
+    }
+    if (kind == "HEAL") {
+        newHp = (integer)llList2String(fields, 3);
+        if (newHp < 0) newHp = 0;
+        gHP = newHp;
+        if (gState == ST_DEFEATED) {
+            if (gAggro == "on_sight") enter(ST_ACTIVE);
+            else enter(ST_IDLE);
+        }
+        else {
+            refreshText();
+            saveRuntime();
+        }
+        ack(av);
+        return;
+    }
+    if (kind == "COUNTER") {
+        newHp = (integer)llList2String(fields, 3);
+        damage = (integer)llList2String(fields, 4);
+        if (newHp < 0) newHp = 0;
+        remember(av, newHp);
+        enter(ST_COMBAT);
+        if (damage > 0) llMessageLinked(LINK_SET, LINK_SEND, "HPDELTA|" + (string)av + "|" + (string)(-damage), av);
+        ack(av);
+    }
+}
+
+onTouch(string rest) {
+    key av;
+    av = (key)rest;
+    if (!gReady) {
+        tell(av, "The NPC is still starting.");
+        return;
+    }
+    gLastActivity = llGetUnixTime();
+    if (gState == ST_OFF && gResting) activate(ST_OFF, av);
+    openRoot(av);
+}
+
+onCard(string name) {
+    gCard = name;
+    gHpT = -1;
+    gAtkT = -1;
+    gDefT = -1;
+    gNameT = "";
+    gMode = -1;
+    if (name == "combat") gMode = 0;
+    else if (name == "npc") gMode = 1;
+    else if (name == "party") gMode = 2;
+}
+
+onDo(string rest) {
+    integer cut;
+    integer menu;
+    key av;
+    string message;
+    cut = llSubStringIndex(rest, "\n");
+    if (cut < 0) return;
+    menu = (integer)llGetSubString(rest, 0, cut - 1);
+    rest = llGetSubString(rest, cut + 1, -1);
+    cut = llSubStringIndex(rest, "\n");
+    if (cut < 0) return;
+    av = (key)llGetSubString(rest, 0, cut - 1);
+    message = llGetSubString(rest, cut + 1, -1);
+    handleMenu(menu, av, message);
+}
+
+onText(string rest) {
+    integer cut;
+    integer which;
+    key av;
+    string message;
+    cut = llSubStringIndex(rest, "\n");
+    if (cut < 0) return;
+    which = (integer)llGetSubString(rest, 0, cut - 1);
+    rest = llGetSubString(rest, cut + 1, -1);
+    cut = llSubStringIndex(rest, "\n");
+    if (cut < 0) return;
+    av = (key)llGetSubString(rest, 0, cut - 1);
+    message = llGetSubString(rest, cut + 1, -1);
+    handleText(which, av, message);
+}
+
+onBody(string body) {
+    string op;
+    op = opOf(body);
+    if (op == "C") onCard(restOf(body));
+    else if (op == "L") parseLine(restOf(body));
+    else if (op == "E") commitCard();
+    else if (op == "BOOT") finishBoot();
+    else if (op == "TOUCH") onTouch(restOf(body));
+    else if (op == "DO") onDo(restOf(body));
+    else if (op == "TXT") onText(restOf(body));
+    else if (op == "Z") applyZ(body);
+    else if (op == "RST") llResetScript();
 }
 
 default {
     state_entry() {
         gRangeM = 10;
-        gAttackDie = 20;
-        gDefenseDie = 20;
-        gCritMargin = 10;
-        gCritMult = 2;
-        gDamageDie = 6;
-        gDamageScale = 2;
-        gMinDamage = 1;
-        gHealDie = 8;
-        gHealBonus = 0;
-        gDefendBonus = 2;
         gRest = 300;
         gRestore = "defeated";
         gAggro = "on_attack";
@@ -1094,14 +964,7 @@ default {
         gState = ST_OFF;
         gQuery = NULL_KEY;
         gForced = NULL_KEY;
-        queueCard("npc");
-        queueCard("combat");
-        queueCard("party");
-        if (llGetInventoryType("npc") != INVENTORY_NOTECARD) llOwnerSay("Notecard \"npc\" is missing. Using default statistics.");
-        if (llGetInventoryType("combat") != INVENTORY_NOTECARD) llOwnerSay("Notecard \"combat\" is missing. Using the default combat rules.");
-        if (llGetInventoryType("party") != INVENTORY_NOTECARD) llOwnerSay("Notecard \"party\" is missing. This NPC has no allies.");
         llSetText(gName + "\nStarting", <0.7, 0.7, 0.7>, 1.0);
-        pump();
     }
 
     on_rez(integer start) {
@@ -1116,24 +979,13 @@ default {
         if (change & CHANGED_INVENTORY) llResetScript();
     }
 
-    touch_start(integer total) {
-        key av;
-        av = llDetectedKey(0);
-        if (!gReady) {
-            tell(av, "The NPC is still starting.");
-            return;
-        }
-        gLastActivity = llGetUnixTime();
-        if (gState == ST_OFF && gResting) activate(ST_OFF, av);
-        openRoot(av);
-    }
-
     link_message(integer sender, integer num, string str, key id) {
         if (num == LINK_READY) {
             gBuild = str;
             if (gReady) pushListen();
         }
         else if (num == LINK_RECV) onRecv(str, id);
+        else if (num == LINK_BODY) onBody(str);
     }
 
     dataserver(key query, string data) {
@@ -1158,21 +1010,7 @@ default {
             pump();
             return;
         }
-        if (data == EOF) {
-            commitCard();
-            pump();
-            return;
-        }
-        parseLine(data);
-        gLine = gLine + 1;
-        gQuery = llGetNotecardLine(gCard, gLine);
-    }
-
-    listen(integer channel, string name, key id, string message) {
-        if (channel != gChan) return;
-        if (id != gMenuAv) return;
-        if (gText != 0) handleText(message);
-        else handleMenu(message);
+        pump();
     }
 
     sensor(integer detected) {
@@ -1199,7 +1037,6 @@ default {
     timer() {
         integer now;
         now = llGetUnixTime();
-        if (gHandle && now > gExpires) closeDialog();
         if (gReqId != "" && now - gReqTime > 8) {
             if (gReqAv != NULL_KEY && gReqKind != "COUNTER") {
                 tell(gReqAv, "No SL RPG Combat HUD detected.");

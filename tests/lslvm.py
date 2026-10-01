@@ -594,6 +594,7 @@ def lex(source):
 class Script:
     def __init__(self, source, filename="<script>"):
         self.filename = filename
+        self.peers = []
         globals_, functions = Parser(source, filename).parse()
         self.functions = {}
         for func in functions:
@@ -669,7 +670,7 @@ class Script:
             self.did_reset = True
             return None
 
-    def deliver(self, limit=10000):
+    def deliver(self, limit=10000, strict=True):
         steps = 0
         while self.pending and steps < limit and not self.did_reset:
             kind, query, *rest = self.pending.pop(0)
@@ -685,7 +686,7 @@ class Script:
                 data = NULL_UUID if found is None else found
             self.call("dataserver", query, data)
             steps += 1
-        if self.pending and not self.did_reset:
+        if strict and self.pending and not self.did_reset:
             raise LSLError("notecard delivery did not finish")
         return steps
 
@@ -1193,9 +1194,15 @@ class Script:
         return None
 
     def b_message_linked(self, args):
-        self.links.append(
-            (self.as_int(args[0]), self.as_int(args[1]), self.as_str(args[2]), self.as_key(args[3]))
-        )
+        link = self.as_int(args[0])
+        num = self.as_int(args[1])
+        body = self.as_str(args[2])
+        key = self.as_key(args[3])
+        self.links.append((link, num, body, key))
+        # Record first. Real SL queues link_message; this VM runs peers now so a
+        # split script sees the reply before llMessageLinked returns.
+        for peer in list(getattr(self, "peers", ())):
+            peer.call("link_message", 1, num, body, key)
         return None
 
     def b_dialog(self, args):
